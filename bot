@@ -1,0 +1,151 @@
+#include <Servo.h>
+#include "HX711.h"
+#include <MFRC522.h>
+#include <SPI.h>
+#include <RF24.h>
+
+Servo servo1;
+Servo servo2;
+Servo servo3;
+Servo servo4;
+Servo servo5;
+
+#define SERVO_PIN_1 9
+#define SERVO_PIN_2 10
+#define SERVO_PIN_3 11
+#define SERVO_PIN_4 12
+#define SERVO_PIN_5 13
+
+#define IR_SENSOR_RIGHT 14
+#define IR_SENSOR_LEFT 15
+
+#define MOTOR_SPEED 180
+
+const int LOADCELL_DOUT_PIN = 2;
+const int LOADCELL_SCK_PIN = 3;
+
+// Right motor
+int enableRightMotor = 4;
+int rightMotorPin1 = 5;
+int rightMotorPin2 = 6;
+
+// Left motor
+int enableLeftMotor = 7;
+int leftMotorPin1 = 8;
+int leftMotorPin2 = 9;
+
+// Ultrasonic sensor
+#define TRIGGER_PIN 16
+#define ECHO_PIN 17
+
+#define OBSTACLE_DISTANCE_THRESHOLD 20 // Distance threshold to detect an obstacle (adjust as needed)
+
+HX711 scale;
+
+#define SS_PIN 10
+#define RST_PIN 9
+MFRC522 mfrc522_1(SS_PIN, RST_PIN);  // RFID reader 1
+MFRC522 mfrc522_2(8, 7);  // RFID reader 2
+MFRC522 mfrc522_3(6, 5);  // RFID reader 3
+MFRC522 mfrc522_4(4, 3);  // RFID reader 4
+MFRC522 mfrc522_hub(2, 1);  // Hub RFID reader
+
+RF24 radio(CE_PIN, CSN_PIN); // Create a Radio
+const byte address[6] = "00001";
+
+byte hubUID[] = {0x11, 0x22, 0x33, 0x44, 0x55}; // Adjust as needed
+
+// Define expected UIDs for each checkpoint
+byte checkpoint1UID[] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE};  // Adjust as needed
+byte checkpoint2UID[] = {0xFF, 0xAA, 0xBB, 0xCC, 0xDD};  // Adjust as needed
+byte checkpoint3UID[] = {0xDD, 0xEE, 0xFF, 0xAA, 0xBB};  // Adjust as needed
+byte checkpoint4UID[] = {0xBB, 0xCC, 0xDD, 0xEE, 0xFF};  // Adjust as needed
+
+void setup() {
+  Serial.begin(9600);
+
+  TCCR0B = TCCR0B & B11111000 | B00000010;
+  pinMode(enableRightMotor, OUTPUT);
+  pinMode(rightMotorPin1, OUTPUT);
+  pinMode(rightMotorPin2, OUTPUT);
+
+  pinMode(enableLeftMotor, OUTPUT);
+  pinMode(leftMotorPin1, OUTPUT);
+  pinMode(leftMotorPin2, OUTPUT);
+
+  pinMode(IR_SENSOR_RIGHT, INPUT);
+  pinMode(IR_SENSOR_LEFT, INPUT);
+
+  pinMode(TRIGGER_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  servo1.attach(SERVO_PIN_1);
+  servo2.attach(SERVO_PIN_2);
+  servo3.attach(SERVO_PIN_3);
+  servo4.attach(SERVO_PIN_4);
+  servo5.attach(SERVO_PIN_5);
+
+  scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
+
+  SPI.begin();
+  mfrc522_1.PCD_Init();
+  mfrc522_2.PCD_Init();
+  mfrc522_3.PCD_Init();
+  mfrc522_4.PCD_Init();
+  mfrc522_hub.PCD_Init();
+
+  radio.begin();
+  radio.openReadingPipe(1, address);
+  radio.startListening();
+}
+
+void loop() {
+  int rightIRSensorValue = digitalRead(IR_SENSOR_RIGHT);
+  int leftIRSensorValue = digitalRead(IR_SENSOR_LEFT);
+
+  float weight = getWeight(); // Get weight from load cell
+
+  if (detectObstacle()) {
+    stopRobot(); // Stop the robot if obstacle is detected
+    return; // Exit the loop
+  }
+
+  if (mfrc522_1.PICC_IsNewCardPresent() && mfrc522_1.PICC_ReadCardSerial()) {
+    byte uid[5] = {0};
+    for (byte i = 0; i < 5; i++) {
+      uid[i] = mfrc522_1.uid.uidByte[i];
+    }
+    if (compareUID(uid, checkpoint1UID)) {
+      servo4.write(180);
+      delay(1000); // Wait for servo to actuate
+      servo4.write(0); // Reset servo position
+    }
+
+    mfrc522_1.PICC_HaltA();
+    mfrc522_1.PCD_StopCrypto1();
+  } else if (mfrc522_2.PICC_IsNewCardPresent() && mfrc522_2.PICC_ReadCardSerial()) {
+    // Handle RFID reader 2
+  } else if (mfrc522_3.PICC_IsNewCardPresent() && mfrc522_3.PICC_ReadCardSerial()) {
+    // Handle RFID reader 3
+  } else if (mfrc522_4.PICC_IsNewCardPresent() && mfrc522_4.PICC_ReadCardSerial()) {
+    // Handle RFID reader 4
+  } else if (mfrc522_hub.PICC_IsNewCardPresent() && mfrc522_hub.PICC_ReadCardSerial()) {
+    byte uid[5] = {0};
+    for (byte i = 0; i < 5; i++) {
+      uid[i] = mfrc522_hub.uid.uidByte[i];
+    }
+    if (compareUID(uid, hubUID)) {
+      // Perform action to remove load
+      removeLoad();
+    }
+
+    mfrc522_hub.PICC_HaltA();
+    mfrc522_hub.PCD_StopCrypto1();
+  }
+
+           
+  if (radio.available()) {
+    char message[32] = {0};
+    radio.read(message, sizeof(message));
+    if (strcmp(message, "Bin is full!") == 0) {
+      // Go straight to
